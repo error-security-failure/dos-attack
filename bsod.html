@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Blue Screen</title>
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    background-color: #0078D7; /* Windows BSOD blue */
+    font-family: "Segoe UI Semilight", "Segoe UI", "Segoe UI Web", -apple-system, "Helvetica Neue", Arial, sans-serif;
+    color: #ffffff;
+    overflow: hidden;
+  }
+
+  .container {
+    position: relative;
+    width: 100%;
+    height: 100vh;
+    box-sizing: border-box;
+    padding: 90px 100px;
+  }
+
+  .frown {
+    font-size: 110px;
+    font-weight: 200;
+    line-height: 1;
+    margin-bottom: 40px;
+    letter-spacing: 4px;
+  }
+
+  .main-text {
+    font-size: 26px;
+    font-weight: 300;
+    line-height: 1.4;
+    max-width: 620px;
+    margin-bottom: 30px;
+  }
+
+  .percent {
+    font-size: 26px;
+    font-weight: 300;
+    margin-bottom: 60px;
+  }
+
+  .bottom-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 18px;
+  }
+
+  .qr {
+    width: 68px;
+    height: 68px;
+    background: #ffffff;
+    flex-shrink: 0;
+  }
+
+  .qr img {
+    width: 100%;
+    height: 100%;
+    display: block;
+  }
+
+  .info-text {
+    font-size: 13.5px;
+    font-weight: 300;
+    line-height: 1.6;
+  }
+
+  .info-text a {
+    color: #ffffff;
+    text-decoration: none;
+  }
+
+  .stopcode {
+    margin-top: 6px;
+  }
+
+  .logo {
+    position: absolute;
+    top: 230px;
+    right: 100px;
+  }
+
+  .logo svg {
+    width: 190px;
+    height: 190px;
+  }
+</style>
+<script>
+  /* ============================================================
+   CURSOR CHASE — keyboard-only game
+   - Hides/disables the real mouse cursor during play
+   - A target "cursor" darts to a random position/direction
+     on a timer — you steer a chaser with arrow keys / WASD
+   - Fullscreen toggle (F key or on-screen button)
+   - Ctrl+J+K triggers an in-game action (bonus round / reset)
+
+   NOTE: No web page can override the browser's own Escape-to-
+   exit-fullscreen behavior, or hijack Ctrl/Cmd+key combos that
+   the OS/browser reserves (like opening a new tab). Those are
+   security protections against malicious "locked screen" pages,
+   and this script does not attempt to bypass them. Ctrl+J+K
+   below is wired to an in-game effect instead.
+   ============================================================ */
+
+(function () {
+  "use strict";
+
+  // ---------- Config ----------
+  const CHASER_SPEED = 6;          // px per frame
+  const TARGET_MOVE_MIN_MS = 900;  // random retarget interval
+  const TARGET_MOVE_MAX_MS = 2200;
+  const CATCH_RADIUS = 28;         // px distance counted as "caught"
+  const BONUS_DURATION_MS = 5000;
+
+  // ---------- Build DOM ----------
+  const root = document.createElement("div");
+  root.id = "cursor-chase-root";
+  Object.assign(root.style, {
+    position: "fixed",
+    inset: "0",
+    background: "#0b0f1a",
+    overflow: "hidden",
+    cursor: "none",           // hide real cursor inside the game area
+    userSelect: "none",
+    fontFamily: "system-ui, sans-serif",
+    zIndex: 999999,
+  });
+
+  const hud = document.createElement("div");
+  Object.assign(hud.style, {
+    position: "absolute",
+    top: "14px",
+    left: "16px",
+    color: "#e8f0ff",
+    fontSize: "16px",
+    lineHeight: "1.5",
+    textShadow: "0 1px 3px rgba(0,0,0,0.6)",
+    pointerEvents: "none",
+  });
+  root.appendChild(hud);
+
+  const fsBtn = document.createElement("button");
+  fsBtn.textContent = "Enter Fullscreen (F)";
+  Object.assign(fsBtn.style, {
+    position: "absolute",
+    top: "14px",
+    right: "16px",
+    padding: "8px 14px",
+    borderRadius: "8px",
+    border: "none",
+    background: "#3b6cf6",
+    color: "white",
+    fontSize: "14px",
+    cursor: "pointer", // real button, ok to show pointer on it
+  });
+  root.appendChild(fsBtn);
+
+  const target = document.createElement("div");
+  Object.assign(target.style, {
+    position: "absolute",
+    width: "18px",
+    height: "18px",
+    borderRadius: "50%",
+    background: "radial-gradient(circle, #ffe066, #ff8c00)",
+    boxShadow: "0 0 18px 6px rgba(255,180,0,0.7)",
+    transform: "translate(-50%, -50%)",
+    transition: "left 0.25s ease, top 0.25s ease",
+  });
+  root.appendChild(target);
+
+  const chaser = document.createElement("div");
+  Object.assign(chaser.style, {
+    position: "absolute",
+    width: "22px",
+    height: "22px",
+    borderRadius: "50%",
+    background: "radial-gradient(circle, #7fe7ff, #0080ff)",
+    boxShadow: "0 0 14px 4px rgba(0,150,255,0.6)",
+    transform: "translate(-50%, -50%)",
+  });
+  root.appendChild(chaser);
+
+  document.body.appendChild(root);
+
+  // ---------- State ----------
+  let W = window.innerWidth, H = window.innerHeight;
+  let chaserPos = { x: W / 2, y: H / 2 };
+  let targetPos = { x: Math.random() * W, y: Math.random() * H };
+  let score = 0;
+  let bonusUntil = 0;
+  const keys = new Set();
+
+  function updateHud() {
+    const bonusActive = performance.now() < bonusUntil;
+    hud.innerHTML =
+      `Score: <b>${score}</b>` +
+      (bonusActive ? ` &nbsp;⚡ BONUS ROUND` : "") +
+      `<br><span style="opacity:.75;font-size:13px">` +
+      `Move: Arrow keys / WASD &nbsp;•&nbsp; Fullscreen: F &nbsp;•&nbsp; ` +
+      `Ctrl+J+K: trigger bonus round</span>`;
+  }
+  updateHud();
+
+  function placeTargetRandomly() {
+    // "change direction" — jump to a new random point on screen
+    const pad = 40;
+    targetPos = {
+      x: pad + Math.random() * (W - pad * 2),
+      y: pad + Math.random() * (H - pad * 2),
+    };
+  }
+
+  function scheduleNextTargetMove() {
+    const bonusActive = performance.now() < bonusUntil;
+    const delay =
+      TARGET_MOVE_MIN_MS +
+      Math.random() *
+        (TARGET_MOVE_MAX_MS - TARGET_MOVE_MIN_MS) *
+        (bonusActive ? 0.4 : 1); // moves faster during bonus
+    setTimeout(() => {
+      placeTargetRandomly();
+      scheduleNextTargetMove();
+    }, delay);
+  }
+  scheduleNextTargetMove();
+
+  // ---------- Input ----------
+  window.addEventListener("keydown", (e) => {
+    keys.add(e.key.toLowerCase());
+
+    // Toggle fullscreen with F
+    if (e.key.toLowerCase() === "f") {
+      toggleFullscreen();
+    }
+
+    // Ctrl+J+K in-game action (cannot and does not attempt to
+    // open an actual browser tab — that's not something any
+    // webpage is allowed to trigger programmatically)
+    if (e.ctrlKey && keys.has("j") && keys.has("k")) {
+      triggerBonusRound();
+      e.preventDefault();
+    }
+  });
+  window.addEventListener("keyup", (e) => {
+    keys.delete(e.key.toLowerCase());
+  });
+
+  function triggerBonusRound() {
+    bonusUntil = performance.now() + BONUS_DURATION_MS;
+    score += 5; // small reward for finding the combo
+    placeTargetRandomly();
+    updateHud();
+  }
+
+  function toggleFullscreen() {
+    if (!document.fullscreenElement) {
+      root.requestFullscreen?.().catch(() => {});
+    } else {
+      document.exitFullscreen?.().catch(() => {});
+    }
+  }
+  fsBtn.addEventListener("click", toggleFullscreen);
+
+  window.addEventListener("resize", () => {
+    W = window.innerWidth;
+    H = window.innerHeight;
+  });
+
+  // Block the context menu / drag so a stray click can't do anything
+  root.addEventListener("contextmenu", (e) => e.preventDefault());
+  root.addEventListener("dragstart", (e) => e.preventDefault());
+
+  // ---------- Game loop ----------
+  function step() {
+    let dx = 0, dy = 0;
+    if (keys.has("arrowup") || keys.has("w")) dy -= 1;
+    if (keys.has("arrowdown") || keys.has("s")) dy += 1;
+    if (keys.has("arrowleft") || keys.has("a")) dx -= 1;
+    if (keys.has("arrowright") || keys.has("d")) dx += 1;
+
+    if (dx || dy) {
+      const len = Math.hypot(dx, dy) || 1;
+      chaserPos.x += (dx / len) * CHASER_SPEED;
+      chaserPos.y += (dy / len) * CHASER_SPEED;
+      chaserPos.x = Math.max(0, Math.min(W, chaserPos.x));
+      chaserPos.y = Math.max(0, Math.min(H, chaserPos.y));
+    }
+
+    // Check catch
+    const dist = Math.hypot(
+      chaserPos.x - targetPos.x,
+      chaserPos.y - targetPos.y
+    );
+    if (dist < CATCH_RADIUS) {
+      score += performance.now() < bonusUntil ? 3 : 1;
+      placeTargetRandomly();
+      updateHud();
+    }
+
+    chaser.style.left = chaserPos.x + "px";
+    chaser.style.top = chaserPos.y + "px";
+    target.style.left = targetPos.x + "px";
+    target.style.top = targetPos.y + "px";
+
+    requestAnimationFrame(step);
+  }
+  requestAnimationFrame(step);
+})();
+</script>
+<script>
+async function enterFullscreen() {
+  try {
+    if (!document.fullscreenElement) {
+      await document.documentElement.requestFullscreen();
+    }
+  } catch (err) {
+    console.error(err);
+  }
+
+  window.removeEventListener("click", enterFullscreen);
+  window.removeEventListener("keydown", enterFullscreen);
+  window.removeEventListener("touchstart", enterFullscreen);
+  window.removeEventListener("scroll", enterFullscreen);
+}
+
+window.addEventListener("click", enterFullscreen, { once: true });
+window.addEventListener("keydown", enterFullscreen, { once: true });
+window.addEventListener("touchstart", enterFullscreen, { once: true });
+window.addEventListener("scroll", enterFullscreen, { once: true, passive: true });
+</script>
+
+<script>
+document.addEventListener("keydown", (e) => {
+  // Allow Ctrl+J+K combination (see note below)
+  if (e.ctrlKey && e.key.toLowerCase() === "k") {
+    window.open("https://example.com", "_blank");
+    return;
+  }
+
+  e.preventDefault();
+  e.stopPropagation();
+}, true);
+
+document.addEventListener("keypress", (e) => {
+  e.preventDefault();
+  e.stopPropagation();
+}, true);
+
+document.addEventListener("keyup", (e) => {
+  e.preventDefault();
+  e.stopPropagation();
+}, true);
+</script>
+<script>
+  document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") {
+    e.preventDefault();
+    e.stopPropagation();
+  }
+}, true);
+</script>
+</head>
+<body>
+  <div class="container">
+    <div class="frown">:&nbsp;(</div>
+
+    <div class="main-text">
+      Your computer has alerted us that it has been infected with a DOSAttack Spyware.
+      The following data has been compromised.
+      <br><br>
+      Contact Windows Support: 1-833-216-2312
+    </div>
+
+
+    <div class="percent"></div>
+
+    <div class="bottom-row">
+      <div class="qr">
+        <!-- Placeholder QR pattern -->
+        <svg width="68" height="68" viewBox="0 0 288 288" xmlns="http://www.w3.org/2000/svg">
+  <rect x="0" y="0" width="288" height="288" rx="14" fill="#ffffff"/>
+  <rect x="3.0" y="3.0" width="282" height="282" rx="12" fill="none" stroke="#0067B8" stroke-width="6"/>
+  <rect x="18" y="18" width="252" height="252" fill="#ffffff"/>
+  <rect x="28" y="28" width="8" height="8" fill="#0067B8"/><rect x="36" y="28" width="8" height="8" fill="#0067B8"/><rect x="44" y="28" width="8" height="8" fill="#0067B8"/><rect x="52" y="28" width="8" height="8" fill="#0067B8"/><rect x="60" y="28" width="8" height="8" fill="#0067B8"/><rect x="68" y="28" width="8" height="8" fill="#0067B8"/><rect x="76" y="28" width="8" height="8" fill="#0067B8"/><rect x="92" y="28" width="8" height="8" fill="#0067B8"/><rect x="100" y="28" width="8" height="8" fill="#0067B8"/><rect x="116" y="28" width="8" height="8" fill="#0067B8"/><rect x="124" y="28" width="8" height="8" fill="#0067B8"/><rect x="164" y="28" width="8" height="8" fill="#0067B8"/><rect x="172" y="28" width="8" height="8" fill="#0067B8"/><rect x="204" y="28" width="8" height="8" fill="#0067B8"/><rect x="212" y="28" width="8" height="8" fill="#0067B8"/><rect x="220" y="28" width="8" height="8" fill="#0067B8"/><rect x="228" y="28" width="8" height="8" fill="#0067B8"/><rect x="236" y="28" width="8" height="8" fill="#0067B8"/><rect x="244" y="28" width="8" height="8" fill="#0067B8"/><rect x="252" y="28" width="8" height="8" fill="#0067B8"/><rect x="28" y="36" width="8" height="8" fill="#0067B8"/><rect x="76" y="36" width="8" height="8" fill="#0067B8"/><rect x="100" y="36" width="8" height="8" fill="#0067B8"/><rect x="156" y="36" width="8" height="8" fill="#0067B8"/><rect x="180" y="36" width="8" height="8" fill="#0067B8"/><rect x="204" y="36" width="8" height="8" fill="#0067B8"/><rect x="252" y="36" width="8" height="8" fill="#0067B8"/><rect x="28" y="44" width="8" height="8" fill="#0067B8"/><rect x="44" y="44" width="8" height="8" fill="#0067B8"/><rect x="52" y="44" width="8" height="8" fill="#0067B8"/><rect x="60" y="44" width="8" height="8" fill="#0067B8"/><rect x="76" y="44" width="8" height="8" fill="#0067B8"/><rect x="100" y="44" width="8" height="8" fill="#0067B8"/><rect x="108" y="44" width="8" height="8" fill="#0067B8"/><rect x="116" y="44" width="8" height="8" fill="#0067B8"/><rect x="132" y="44" width="8" height="8" fill="#0067B8"/><rect x="148" y="44" width="8" height="8" fill="#0067B8"/><rect x="156" y="44" width="8" height="8" fill="#0067B8"/><rect x="164" y="44" width="8" height="8" fill="#0067B8"/><rect x="172" y="44" width="8" height="8" fill="#0067B8"/><rect x="180" y="44" width="8" height="8" fill="#0067B8"/><rect x="188" y="44" width="8" height="8" fill="#0067B8"/><rect x="204" y="44" width="8" height="8" fill="#0067B8"/><rect x="220" y="44" width="8" height="8" fill="#0067B8"/><rect x="228" y="44" width="8" height="8" fill="#0067B8"/><rect x="236" y="44" width="8" height="8" fill="#0067B8"/><rect x="252" y="44" width="8" height="8" fill="#0067B8"/><rect x="28" y="52" width="8" height="8" fill="#0067B8"/><rect x="44" y="52" width="8" height="8" fill="#0067B8"/><rect x="52" y="52" width="8" height="8" fill="#0067B8"/><rect x="60" y="52" width="8" height="8" fill="#0067B8"/><rect x="76" y="52" width="8" height="8" fill="#0067B8"/><rect x="92" y="52" width="8" height="8" fill="#0067B8"/><rect x="100" y="52" width="8" height="8" fill="#0067B8"/><rect x="108" y="52" width="8" height="8" fill="#0067B8"/><rect x="116" y="52" width="8" height="8" fill="#0067B8"/><rect x="124" y="52" width="8" height="8" fill="#0067B8"/><rect x="140" y="52" width="8" height="8" fill="#0067B8"/><rect x="148" y="52" width="8" height="8" fill="#0067B8"/><rect x="156" y="52" width="8" height="8" fill="#0067B8"/><rect x="180" y="52" width="8" height="8" fill="#0067B8"/><rect x="204" y="52" width="8" height="8" fill="#0067B8"/><rect x="220" y="52" width="8" height="8" fill="#0067B8"/><rect x="228" y="52" width="8" height="8" fill="#0067B8"/><rect x="236" y="52" width="8" height="8" fill="#0067B8"/><rect x="252" y="52" width="8" height="8" fill="#0067B8"/><rect x="28" y="60" width="8" height="8" fill="#0067B8"/><rect x="44" y="60" width="8" height="8" fill="#0067B8"/><rect x="52" y="60" width="8" height="8" fill="#0067B8"/><rect x="60" y="60" width="8" height="8" fill="#0067B8"/><rect x="76" y="60" width="8" height="8" fill="#0067B8"/><rect x="92" y="60" width="8" height="8" fill="#0067B8"/><rect x="116" y="60" width="8" height="8" fill="#0067B8"/><rect x="124" y="60" width="8" height="8" fill="#0067B8"/><rect x="132" y="60" width="8" height="8" fill="#0067B8"/><rect x="140" y="60" width="8" height="8" fill="#0067B8"/><rect x="156" y="60" width="8" height="8" fill="#0067B8"/><rect x="164" y="60" width="8" height="8" fill="#0067B8"/><rect x="172" y="60" width="8" height="8" fill="#0067B8"/><rect x="204" y="60" width="8" height="8" fill="#0067B8"/><rect x="220" y="60" width="8" height="8" fill="#0067B8"/><rect x="228" y="60" width="8" height="8" fill="#0067B8"/><rect x="236" y="60" width="8" height="8" fill="#0067B8"/><rect x="252" y="60" width="8" height="8" fill="#0067B8"/><rect x="28" y="68" width="8" height="8" fill="#0067B8"/><rect x="76" y="68" width="8" height="8" fill="#0067B8"/><rect x="92" y="68" width="8" height="8" fill="#0067B8"/><rect x="124" y="68" width="8" height="8" fill="#0067B8"/><rect x="132" y="68" width="8" height="8" fill="#0067B8"/><rect x="140" y="68" width="8" height="8" fill="#0067B8"/><rect x="148" y="68" width="8" height="8" fill="#0067B8"/><rect x="164" y="68" width="8" height="8" fill="#0067B8"/><rect x="180" y="68" width="8" height="8" fill="#0067B8"/><rect x="204" y="68" width="8" height="8" fill="#0067B8"/><rect x="252" y="68" width="8" height="8" fill="#0067B8"/><rect x="28" y="76" width="8" height="8" fill="#0067B8"/><rect x="36" y="76" width="8" height="8" fill="#0067B8"/><rect x="44" y="76" width="8" height="8" fill="#0067B8"/><rect x="52" y="76" width="8" height="8" fill="#0067B8"/><rect x="60" y="76" width="8" height="8" fill="#0067B8"/><rect x="68" y="76" width="8" height="8" fill="#0067B8"/><rect x="76" y="76" width="8" height="8" fill="#0067B8"/><rect x="92" y="76" width="8" height="8" fill="#0067B8"/><rect x="108" y="76" width="8" height="8" fill="#0067B8"/><rect x="124" y="76" width="8" height="8" fill="#0067B8"/><rect x="140" y="76" width="8" height="8" fill="#0067B8"/><rect x="156" y="76" width="8" height="8" fill="#0067B8"/><rect x="172" y="76" width="8" height="8" fill="#0067B8"/><rect x="188" y="76" width="8" height="8" fill="#0067B8"/><rect x="204" y="76" width="8" height="8" fill="#0067B8"/><rect x="212" y="76" width="8" height="8" fill="#0067B8"/><rect x="220" y="76" width="8" height="8" fill="#0067B8"/><rect x="228" y="76" width="8" height="8" fill="#0067B8"/><rect x="236" y="76" width="8" height="8" fill="#0067B8"/><rect x="244" y="76" width="8" height="8" fill="#0067B8"/><rect x="252" y="76" width="8" height="8" fill="#0067B8"/><rect x="92" y="84" width="8" height="8" fill="#0067B8"/><rect x="100" y="84" width="8" height="8" fill="#0067B8"/><rect x="108" y="84" width="8" height="8" fill="#0067B8"/><rect x="116" y="84" width="8" height="8" fill="#0067B8"/><rect x="140" y="84" width="8" height="8" fill="#0067B8"/><rect x="164" y="84" width="8" height="8" fill="#0067B8"/><rect x="172" y="84" width="8" height="8" fill="#0067B8"/><rect x="180" y="84" width="8" height="8" fill="#0067B8"/><rect x="28" y="92" width="8" height="8" fill="#0067B8"/><rect x="60" y="92" width="8" height="8" fill="#0067B8"/><rect x="76" y="92" width="8" height="8" fill="#0067B8"/><rect x="84" y="92" width="8" height="8" fill="#0067B8"/><rect x="92" y="92" width="8" height="8" fill="#0067B8"/><rect x="100" y="92" width="8" height="8" fill="#0067B8"/><rect x="108" y="92" width="8" height="8" fill="#0067B8"/><rect x="132" y="92" width="8" height="8" fill="#0067B8"/><rect x="140" y="92" width="8" height="8" fill="#0067B8"/><rect x="148" y="92" width="8" height="8" fill="#0067B8"/><rect x="156" y="92" width="8" height="8" fill="#0067B8"/><rect x="164" y="92" width="8" height="8" fill="#0067B8"/><rect x="180" y="92" width="8" height="8" fill="#0067B8"/><rect x="188" y="92" width="8" height="8" fill="#0067B8"/><rect x="196" y="92" width="8" height="8" fill="#0067B8"/><rect x="204" y="92" width="8" height="8" fill="#0067B8"/><rect x="212" y="92" width="8" height="8" fill="#0067B8"/><rect x="220" y="92" width="8" height="8" fill="#0067B8"/><rect x="228" y="92" width="8" height="8" fill="#0067B8"/><rect x="252" y="92" width="8" height="8" fill="#0067B8"/><rect x="28" y="100" width="8" height="8" fill="#0067B8"/><rect x="36" y="100" width="8" height="8" fill="#0067B8"/><rect x="52" y="100" width="8" height="8" fill="#0067B8"/><rect x="60" y="100" width="8" height="8" fill="#0067B8"/><rect x="84" y="100" width="8" height="8" fill="#0067B8"/><rect x="100" y="100" width="8" height="8" fill="#0067B8"/><rect x="108" y="100" width="8" height="8" fill="#0067B8"/><rect x="116" y="100" width="8" height="8" fill="#0067B8"/><rect x="124" y="100" width="8" height="8" fill="#0067B8"/><rect x="196" y="100" width="8" height="8" fill="#0067B8"/><rect x="204" y="100" width="8" height="8" fill="#0067B8"/><rect x="212" y="100" width="8" height="8" fill="#0067B8"/><rect x="220" y="100" width="8" height="8" fill="#0067B8"/><rect x="228" y="100" width="8" height="8" fill="#0067B8"/><rect x="236" y="100" width="8" height="8" fill="#0067B8"/><rect x="244" y="100" width="8" height="8" fill="#0067B8"/><rect x="252" y="100" width="8" height="8" fill="#0067B8"/><rect x="28" y="108" width="8" height="8" fill="#0067B8"/><rect x="60" y="108" width="8" height="8" fill="#0067B8"/><rect x="68" y="108" width="8" height="8" fill="#0067B8"/><rect x="76" y="108" width="8" height="8" fill="#0067B8"/><rect x="84" y="108" width="8" height="8" fill="#0067B8"/><rect x="92" y="108" width="8" height="8" fill="#0067B8"/><rect x="116" y="108" width="8" height="8" fill="#0067B8"/><rect x="124" y="108" width="8" height="8" fill="#0067B8"/><rect x="132" y="108" width="8" height="8" fill="#0067B8"/><rect x="140" y="108" width="8" height="8" fill="#0067B8"/><rect x="148" y="108" width="8" height="8" fill="#0067B8"/><rect x="204" y="108" width="8" height="8" fill="#0067B8"/><rect x="212" y="108" width="8" height="8" fill="#0067B8"/><rect x="220" y="108" width="8" height="8" fill="#0067B8"/><rect x="252" y="108" width="8" height="8" fill="#0067B8"/><rect x="36" y="116" width="8" height="8" fill="#0067B8"/><rect x="44" y="116" width="8" height="8" fill="#0067B8"/><rect x="68" y="116" width="8" height="8" fill="#0067B8"/><rect x="84" y="116" width="8" height="8" fill="#0067B8"/><rect x="108" y="116" width="8" height="8" fill="#0067B8"/><rect x="124" y="116" width="8" height="8" fill="#0067B8"/><rect x="132" y="116" width="8" height="8" fill="#0067B8"/><rect x="148" y="116" width="8" height="8" fill="#0067B8"/><rect x="156" y="116" width="8" height="8" fill="#0067B8"/><rect x="164" y="116" width="8" height="8" fill="#0067B8"/><rect x="172" y="116" width="8" height="8" fill="#0067B8"/><rect x="180" y="116" width="8" height="8" fill="#0067B8"/><rect x="188" y="116" width="8" height="8" fill="#0067B8"/><rect x="220" y="116" width="8" height="8" fill="#0067B8"/><rect x="228" y="116" width="8" height="8" fill="#0067B8"/><rect x="244" y="116" width="8" height="8" fill="#0067B8"/><rect x="252" y="116" width="8" height="8" fill="#0067B8"/><rect x="36" y="124" width="8" height="8" fill="#0067B8"/><rect x="44" y="124" width="8" height="8" fill="#0067B8"/><rect x="52" y="124" width="8" height="8" fill="#0067B8"/><rect x="68" y="124" width="8" height="8" fill="#0067B8"/><rect x="76" y="124" width="8" height="8" fill="#0067B8"/><rect x="84" y="124" width="8" height="8" fill="#0067B8"/><rect x="92" y="124" width="8" height="8" fill="#0067B8"/><rect x="100" y="124" width="8" height="8" fill="#0067B8"/><rect x="132" y="124" width="8" height="8" fill="#0067B8"/><rect x="164" y="124" width="8" height="8" fill="#0067B8"/><rect x="188" y="124" width="8" height="8" fill="#0067B8"/><rect x="196" y="124" width="8" height="8" fill="#0067B8"/><rect x="244" y="124" width="8" height="8" fill="#0067B8"/><rect x="28" y="132" width="8" height="8" fill="#0067B8"/><rect x="36" y="132" width="8" height="8" fill="#0067B8"/><rect x="44" y="132" width="8" height="8" fill="#0067B8"/><rect x="116" y="132" width="8" height="8" fill="#0067B8"/><rect x="124" y="132" width="8" height="8" fill="#0067B8"/><rect x="132" y="132" width="8" height="8" fill="#0067B8"/><rect x="140" y="132" width="8" height="8" fill="#0067B8"/><rect x="156" y="132" width="8" height="8" fill="#0067B8"/><rect x="188" y="132" width="8" height="8" fill="#0067B8"/><rect x="204" y="132" width="8" height="8" fill="#0067B8"/><rect x="220" y="132" width="8" height="8" fill="#0067B8"/><rect x="228" y="132" width="8" height="8" fill="#0067B8"/><rect x="236" y="132" width="8" height="8" fill="#0067B8"/><rect x="244" y="132" width="8" height="8" fill="#0067B8"/><rect x="252" y="132" width="8" height="8" fill="#0067B8"/><rect x="28" y="140" width="8" height="8" fill="#0067B8"/><rect x="36" y="140" width="8" height="8" fill="#0067B8"/><rect x="44" y="140" width="8" height="8" fill="#0067B8"/><rect x="52" y="140" width="8" height="8" fill="#0067B8"/><rect x="60" y="140" width="8" height="8" fill="#0067B8"/><rect x="76" y="140" width="8" height="8" fill="#0067B8"/><rect x="92" y="140" width="8" height="8" fill="#0067B8"/><rect x="108" y="140" width="8" height="8" fill="#0067B8"/><rect x="124" y="140" width="8" height="8" fill="#0067B8"/><rect x="156" y="140" width="8" height="8" fill="#0067B8"/><rect x="164" y="140" width="8" height="8" fill="#0067B8"/><rect x="172" y="140" width="8" height="8" fill="#0067B8"/><rect x="188" y="140" width="8" height="8" fill="#0067B8"/><rect x="196" y="140" width="8" height="8" fill="#0067B8"/><rect x="220" y="140" width="8" height="8" fill="#0067B8"/><rect x="228" y="140" width="8" height="8" fill="#0067B8"/><rect x="236" y="140" width="8" height="8" fill="#0067B8"/><rect x="252" y="140" width="8" height="8" fill="#0067B8"/><rect x="28" y="148" width="8" height="8" fill="#0067B8"/><rect x="84" y="148" width="8" height="8" fill="#0067B8"/><rect x="100" y="148" width="8" height="8" fill="#0067B8"/><rect x="108" y="148" width="8" height="8" fill="#0067B8"/><rect x="116" y="148" width="8" height="8" fill="#0067B8"/><rect x="140" y="148" width="8" height="8" fill="#0067B8"/><rect x="164" y="148" width="8" height="8" fill="#0067B8"/><rect x="180" y="148" width="8" height="8" fill="#0067B8"/><rect x="204" y="148" width="8" height="8" fill="#0067B8"/><rect x="244" y="148" width="8" height="8" fill="#0067B8"/><rect x="252" y="148" width="8" height="8" fill="#0067B8"/><rect x="44" y="156" width="8" height="8" fill="#0067B8"/><rect x="52" y="156" width="8" height="8" fill="#0067B8"/><rect x="60" y="156" width="8" height="8" fill="#0067B8"/><rect x="76" y="156" width="8" height="8" fill="#0067B8"/><rect x="92" y="156" width="8" height="8" fill="#0067B8"/><rect x="108" y="156" width="8" height="8" fill="#0067B8"/><rect x="132" y="156" width="8" height="8" fill="#0067B8"/><rect x="140" y="156" width="8" height="8" fill="#0067B8"/><rect x="148" y="156" width="8" height="8" fill="#0067B8"/><rect x="164" y="156" width="8" height="8" fill="#0067B8"/><rect x="180" y="156" width="8" height="8" fill="#0067B8"/><rect x="196" y="156" width="8" height="8" fill="#0067B8"/><rect x="212" y="156" width="8" height="8" fill="#0067B8"/><rect x="244" y="156" width="8" height="8" fill="#0067B8"/><rect x="28" y="164" width="8" height="8" fill="#0067B8"/><rect x="60" y="164" width="8" height="8" fill="#0067B8"/><rect x="92" y="164" width="8" height="8" fill="#0067B8"/><rect x="100" y="164" width="8" height="8" fill="#0067B8"/><rect x="164" y="164" width="8" height="8" fill="#0067B8"/><rect x="172" y="164" width="8" height="8" fill="#0067B8"/><rect x="204" y="164" width="8" height="8" fill="#0067B8"/><rect x="212" y="164" width="8" height="8" fill="#0067B8"/><rect x="220" y="164" width="8" height="8" fill="#0067B8"/><rect x="228" y="164" width="8" height="8" fill="#0067B8"/><rect x="244" y="164" width="8" height="8" fill="#0067B8"/><rect x="252" y="164" width="8" height="8" fill="#0067B8"/><rect x="52" y="172" width="8" height="8" fill="#0067B8"/><rect x="68" y="172" width="8" height="8" fill="#0067B8"/><rect x="76" y="172" width="8" height="8" fill="#0067B8"/><rect x="84" y="172" width="8" height="8" fill="#0067B8"/><rect x="92" y="172" width="8" height="8" fill="#0067B8"/><rect x="124" y="172" width="8" height="8" fill="#0067B8"/><rect x="132" y="172" width="8" height="8" fill="#0067B8"/><rect x="140" y="172" width="8" height="8" fill="#0067B8"/><rect x="148" y="172" width="8" height="8" fill="#0067B8"/><rect x="172" y="172" width="8" height="8" fill="#0067B8"/><rect x="188" y="172" width="8" height="8" fill="#0067B8"/><rect x="220" y="172" width="8" height="8" fill="#0067B8"/><rect x="236" y="172" width="8" height="8" fill="#0067B8"/><rect x="252" y="172" width="8" height="8" fill="#0067B8"/><rect x="60" y="180" width="8" height="8" fill="#0067B8"/><rect x="92" y="180" width="8" height="8" fill="#0067B8"/><rect x="108" y="180" width="8" height="8" fill="#0067B8"/><rect x="124" y="180" width="8" height="8" fill="#0067B8"/><rect x="132" y="180" width="8" height="8" fill="#0067B8"/><rect x="148" y="180" width="8" height="8" fill="#0067B8"/><rect x="164" y="180" width="8" height="8" fill="#0067B8"/><rect x="172" y="180" width="8" height="8" fill="#0067B8"/><rect x="180" y="180" width="8" height="8" fill="#0067B8"/><rect x="188" y="180" width="8" height="8" fill="#0067B8"/><rect x="196" y="180" width="8" height="8" fill="#0067B8"/><rect x="244" y="180" width="8" height="8" fill="#0067B8"/><rect x="252" y="180" width="8" height="8" fill="#0067B8"/><rect x="28" y="188" width="8" height="8" fill="#0067B8"/><rect x="36" y="188" width="8" height="8" fill="#0067B8"/><rect x="44" y="188" width="8" height="8" fill="#0067B8"/><rect x="52" y="188" width="8" height="8" fill="#0067B8"/><rect x="60" y="188" width="8" height="8" fill="#0067B8"/><rect x="76" y="188" width="8" height="8" fill="#0067B8"/><rect x="100" y="188" width="8" height="8" fill="#0067B8"/><rect x="132" y="188" width="8" height="8" fill="#0067B8"/><rect x="164" y="188" width="8" height="8" fill="#0067B8"/><rect x="180" y="188" width="8" height="8" fill="#0067B8"/><rect x="188" y="188" width="8" height="8" fill="#0067B8"/><rect x="196" y="188" width="8" height="8" fill="#0067B8"/><rect x="204" y="188" width="8" height="8" fill="#0067B8"/><rect x="212" y="188" width="8" height="8" fill="#0067B8"/><rect x="220" y="188" width="8" height="8" fill="#0067B8"/><rect x="228" y="188" width="8" height="8" fill="#0067B8"/><rect x="252" y="188" width="8" height="8" fill="#0067B8"/><rect x="92" y="196" width="8" height="8" fill="#0067B8"/><rect x="108" y="196" width="8" height="8" fill="#0067B8"/><rect x="124" y="196" width="8" height="8" fill="#0067B8"/><rect x="132" y="196" width="8" height="8" fill="#0067B8"/><rect x="140" y="196" width="8" height="8" fill="#0067B8"/><rect x="148" y="196" width="8" height="8" fill="#0067B8"/><rect x="156" y="196" width="8" height="8" fill="#0067B8"/><rect x="188" y="196" width="8" height="8" fill="#0067B8"/><rect x="220" y="196" width="8" height="8" fill="#0067B8"/><rect x="252" y="196" width="8" height="8" fill="#0067B8"/><rect x="28" y="204" width="8" height="8" fill="#0067B8"/><rect x="36" y="204" width="8" height="8" fill="#0067B8"/><rect x="44" y="204" width="8" height="8" fill="#0067B8"/><rect x="52" y="204" width="8" height="8" fill="#0067B8"/><rect x="60" y="204" width="8" height="8" fill="#0067B8"/><rect x="68" y="204" width="8" height="8" fill="#0067B8"/><rect x="76" y="204" width="8" height="8" fill="#0067B8"/><rect x="92" y="204" width="8" height="8" fill="#0067B8"/><rect x="124" y="204" width="8" height="8" fill="#0067B8"/><rect x="148" y="204" width="8" height="8" fill="#0067B8"/><rect x="156" y="204" width="8" height="8" fill="#0067B8"/><rect x="164" y="204" width="8" height="8" fill="#0067B8"/><rect x="180" y="204" width="8" height="8" fill="#0067B8"/><rect x="188" y="204" width="8" height="8" fill="#0067B8"/><rect x="204" y="204" width="8" height="8" fill="#0067B8"/><rect x="220" y="204" width="8" height="8" fill="#0067B8"/><rect x="228" y="204" width="8" height="8" fill="#0067B8"/><rect x="236" y="204" width="8" height="8" fill="#0067B8"/><rect x="252" y="204" width="8" height="8" fill="#0067B8"/><rect x="28" y="212" width="8" height="8" fill="#0067B8"/><rect x="76" y="212" width="8" height="8" fill="#0067B8"/><rect x="100" y="212" width="8" height="8" fill="#0067B8"/><rect x="124" y="212" width="8" height="8" fill="#0067B8"/><rect x="140" y="212" width="8" height="8" fill="#0067B8"/><rect x="148" y="212" width="8" height="8" fill="#0067B8"/><rect x="164" y="212" width="8" height="8" fill="#0067B8"/><rect x="180" y="212" width="8" height="8" fill="#0067B8"/><rect x="188" y="212" width="8" height="8" fill="#0067B8"/><rect x="220" y="212" width="8" height="8" fill="#0067B8"/><rect x="244" y="212" width="8" height="8" fill="#0067B8"/><rect x="252" y="212" width="8" height="8" fill="#0067B8"/><rect x="28" y="220" width="8" height="8" fill="#0067B8"/><rect x="44" y="220" width="8" height="8" fill="#0067B8"/><rect x="52" y="220" width="8" height="8" fill="#0067B8"/><rect x="60" y="220" width="8" height="8" fill="#0067B8"/><rect x="76" y="220" width="8" height="8" fill="#0067B8"/><rect x="92" y="220" width="8" height="8" fill="#0067B8"/><rect x="108" y="220" width="8" height="8" fill="#0067B8"/><rect x="116" y="220" width="8" height="8" fill="#0067B8"/><rect x="124" y="220" width="8" height="8" fill="#0067B8"/><rect x="132" y="220" width="8" height="8" fill="#0067B8"/><rect x="140" y="220" width="8" height="8" fill="#0067B8"/><rect x="164" y="220" width="8" height="8" fill="#0067B8"/><rect x="180" y="220" width="8" height="8" fill="#0067B8"/><rect x="188" y="220" width="8" height="8" fill="#0067B8"/><rect x="196" y="220" width="8" height="8" fill="#0067B8"/><rect x="204" y="220" width="8" height="8" fill="#0067B8"/><rect x="212" y="220" width="8" height="8" fill="#0067B8"/><rect x="220" y="220" width="8" height="8" fill="#0067B8"/><rect x="228" y="220" width="8" height="8" fill="#0067B8"/><rect x="28" y="228" width="8" height="8" fill="#0067B8"/><rect x="44" y="228" width="8" height="8" fill="#0067B8"/><rect x="52" y="228" width="8" height="8" fill="#0067B8"/><rect x="60" y="228" width="8" height="8" fill="#0067B8"/><rect x="76" y="228" width="8" height="8" fill="#0067B8"/><rect x="108" y="228" width="8" height="8" fill="#0067B8"/><rect x="116" y="228" width="8" height="8" fill="#0067B8"/><rect x="132" y="228" width="8" height="8" fill="#0067B8"/><rect x="148" y="228" width="8" height="8" fill="#0067B8"/><rect x="156" y="228" width="8" height="8" fill="#0067B8"/><rect x="172" y="228" width="8" height="8" fill="#0067B8"/><rect x="196" y="228" width="8" height="8" fill="#0067B8"/><rect x="212" y="228" width="8" height="8" fill="#0067B8"/><rect x="252" y="228" width="8" height="8" fill="#0067B8"/><rect x="28" y="236" width="8" height="8" fill="#0067B8"/><rect x="44" y="236" width="8" height="8" fill="#0067B8"/><rect x="52" y="236" width="8" height="8" fill="#0067B8"/><rect x="60" y="236" width="8" height="8" fill="#0067B8"/><rect x="76" y="236" width="8" height="8" fill="#0067B8"/><rect x="124" y="236" width="8" height="8" fill="#0067B8"/><rect x="132" y="236" width="8" height="8" fill="#0067B8"/><rect x="148" y="236" width="8" height="8" fill="#0067B8"/><rect x="180" y="236" width="8" height="8" fill="#0067B8"/><rect x="188" y="236" width="8" height="8" fill="#0067B8"/><rect x="196" y="236" width="8" height="8" fill="#0067B8"/><rect x="228" y="236" width="8" height="8" fill="#0067B8"/><rect x="236" y="236" width="8" height="8" fill="#0067B8"/><rect x="244" y="236" width="8" height="8" fill="#0067B8"/><rect x="252" y="236" width="8" height="8" fill="#0067B8"/><rect x="28" y="244" width="8" height="8" fill="#0067B8"/><rect x="76" y="244" width="8" height="8" fill="#0067B8"/><rect x="108" y="244" width="8" height="8" fill="#0067B8"/><rect x="116" y="244" width="8" height="8" fill="#0067B8"/><rect x="124" y="244" width="8" height="8" fill="#0067B8"/><rect x="140" y="244" width="8" height="8" fill="#0067B8"/><rect x="164" y="244" width="8" height="8" fill="#0067B8"/><rect x="172" y="244" width="8" height="8" fill="#0067B8"/><rect x="188" y="244" width="8" height="8" fill="#0067B8"/><rect x="204" y="244" width="8" height="8" fill="#0067B8"/><rect x="220" y="244" width="8" height="8" fill="#0067B8"/><rect x="228" y="244" width="8" height="8" fill="#0067B8"/><rect x="244" y="244" width="8" height="8" fill="#0067B8"/><rect x="252" y="244" width="8" height="8" fill="#0067B8"/><rect x="28" y="252" width="8" height="8" fill="#0067B8"/><rect x="36" y="252" width="8" height="8" fill="#0067B8"/><rect x="44" y="252" width="8" height="8" fill="#0067B8"/><rect x="52" y="252" width="8" height="8" fill="#0067B8"/><rect x="60" y="252" width="8" height="8" fill="#0067B8"/><rect x="68" y="252" width="8" height="8" fill="#0067B8"/><rect x="76" y="252" width="8" height="8" fill="#0067B8"/><rect x="92" y="252" width="8" height="8" fill="#0067B8"/><rect x="100" y="252" width="8" height="8" fill="#0067B8"/><rect x="108" y="252" width="8" height="8" fill="#0067B8"/><rect x="116" y="252" width="8" height="8" fill="#0067B8"/><rect x="124" y="252" width="8" height="8" fill="#0067B8"/><rect x="132" y="252" width="8" height="8" fill="#0067B8"/><rect x="140" y="252" width="8" height="8" fill="#0067B8"/><rect x="148" y="252" width="8" height="8" fill="#0067B8"/><rect x="164" y="252" width="8" height="8" fill="#0067B8"/><rect x="188" y="252" width="8" height="8" fill="#0067B8"/><rect x="212" y="252" width="8" height="8" fill="#0067B8"/><rect x="220" y="252" width="8" height="8" fill="#0067B8"/><rect x="244" y="252" width="8" height="8" fill="#0067B8"/>
+</svg>
+      </div>
+
+      <div class="info-text">
+        IRQL_NOT_DISPATCH_LEVEL
+
+Critical Security Alert: Your computer has detected suspicious activity that indicates a possible DoS (Denial-of-Service) attack and spyware infection. To help prevent further damage, do not restart, shut down, or attempt to close this window, as doing so may interrupt the recovery process and could result in the loss of important files, saved credentials, browsing history, personal information, and other sensitive data stored on your device. Immediate attention is required. Please contact Microsoft Support for professional assistance and follow the instructions provided by the support representative to restore your system safely.
+
+Technical Information:
+
+*** STOP: 0X00000ed (0X80F128D0, 0xc000009c, 0x00000000, 0x0000000)
+
+Beginning dump of physical memory
+Physical memory dump complete.
+
+Contact Windows Support: 
+        <div class="stopcode">Stop code: CRITICAL_PROCESS_DIED</div>
+      </div>
+    </div>
+
+    <div class="logo">
+      <svg fill="#FFFFFF" xmlns="http://www.w3.org/2000/svg"  viewBox="0 0 30 30" width="240px" height="240px"><path d="M12 16L3 16 3 23.75 12 24.988zM12 5L3 6.25 3 14 12 14zM14 4.75L14 14 27 14 27 3zM14 16L14 25.25 27 27 27 16z"/></svg>
+    </div>
+  </div>
+</body>
+</html>
